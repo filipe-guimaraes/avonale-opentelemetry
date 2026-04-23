@@ -1,0 +1,201 @@
+# Cópia sanitizada para compartilhamento (revisão externa).
+# - Sem domínios internos nem labels de plataforma de deploy.
+# - Defina GRAFANA_ADMIN_*, GRAFANA_ROOT_URL e GF_SERVER_DOMAIN via .env em produção.
+#
+version: "3.8"
+services:
+  config-init:
+    image: "alpine:3.19"
+    container_name: observability-config-init
+    volumes:
+      - "observability-config:/config"
+    command: "sh -c \"\n# Criar todos os diretórios necessários\necho 'Criando diretórios...'\nmkdir -p /config/otel\nmkdir -p /config/mimir\nmkdir -p /config/tempo\nmkdir -p /config/grafana/provisioning/datasources\nls -la /config/\necho 'Diretórios criados'\n\n# Configuração do OpenTelemetry Collector\ncat > /config/otel/otel-collector-config.yaml << 'OTEL_EOF'\nreceivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\n        cors:\n          allowed_origins:\n            - http://localhost:5173\n  prometheus:\n    config:\n      scrape_configs:\n        - job_name: 'otel-collector'\n          scrape_interval: 10s\n          static_configs:\n            - targets: ['0.0.0.0:8888']\n\nprocessors:\n  batch:\n    timeout: 10s\n    send_batch_size: 1024\n\n  transform/fetch_route:\n    trace_statements:\n      - context: span\n        statements:\n          - set(span.attributes[\\\"url.path\\\"], span.attributes[\\\"http.url\\\"]) where span.attributes[\\\"http.url\\\"] != nil and span.attributes[\\\"url.path\\\"] == nil\n          - replace_pattern(span.attributes[\\\"url.path\\\"], \\\"^https://[^/]+\\\", \\\"\\\") where span.attributes[\\\"url.path\\\"] != nil\n          - replace_pattern(span.attributes[\\\"url.path\\\"], \\\"^http://[^/]+\\\", \\\"\\\") where span.attributes[\\\"url.path\\\"] != nil\n\n  attributes/normalize-http:\n    actions:\n      - key: http.method\n        from_attribute: http.request.method\n        action: upsert\n      - key: http.status_code\n        from_attribute: http.response.status_code\n        action: upsert\n      - key: http.route\n        from_attribute: url.path\n        action: upsert\n\nconnectors:\n  spanmetrics:\n    dimensions:\n      - name: http.method\n      - name: http.status_code\n      - name: http.route\n    dimensions_cache_size: 1000\n    exemplars:\n      enabled: true\n\nexporters:\n  prometheusremotewrite/mimir:\n    endpoint: http://mimir-1:9009/api/v1/push\n    headers:\n      X-Scope-OrgID: '1'\n    resource_to_telemetry_conversion:\n      enabled: true\n\n  otlp/tempo:\n    endpoint: tempo:4317\n    tls:\n      insecure: true\n\n  debug:\n    verbosity: detailed\n\nservice:\n  telemetry:\n    logs:\n      level: info\n    metrics:\n      level: normal\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [transform/fetch_route, attributes/normalize-http, batch]\n      exporters: [otlp/tempo, spanmetrics, debug]\n    metrics:\n      receivers: [otlp, prometheus, spanmetrics]\n      processors: [batch]\n      exporters: [prometheusremotewrite/mimir, debug]\n  extensions: []\nOTEL_EOF\n\n# Configuração do Mimir\ncat > /config/mimir/mimir.yaml << 'MIMIR_EOF'\ntarget: all\n\nserver:\n  http_listen_port: 9009\n  grpc_listen_port: 9095\n  log_level: info\n\ndistributor:\n  pool:\n    health_check_ingesters: false\n  ring:\n    kvstore:\n      store: memberlist\n  ha_tracker:\n    enable_ha_tracker: false\n\ningester:\n  ring:\n    kvstore:\n      store: memberlist\n\nquerier:\n  max_concurrent: 20\n\ncompactor:\n  data_dir: /var/lib/mimir/compactor\n  sharding_ring:\n    kvstore:\n      store: memberlist\n\nstore_gateway:\n  sharding_ring:\n    kvstore:\n      store: memberlist\n\nmemberlist:\n  join_members:\n    - mimir-1:7946\n    - mimir-2:7946\n    - mimir-3:7946\n  bind_port: 7946\n  advertise_port: 7946\n  cluster_label: mimir\n\nblocks_storage:\n  backend: filesystem\n  filesystem:\n    dir: /var/lib/mimir/blocks\n  bucket_store:\n    sync_dir: /var/lib/mimir/blocks-sync\n  tsdb:\n    dir: /var/lib/mimir/tsdb\n    block_ranges_period:\n      - 1h\n    retention_period: 720h\n\nlimits:\n  max_global_series_per_user: 100000\n  max_global_series_per_metric: 20000\n  ingestion_rate: 10000\n  ingestion_burst_size: 20000\n  max_query_parallelism: 32\n\ncommon:\n  storage:\n    filesystem:\n      dir: /var/lib/mimir\nMIMIR_EOF\n\n# Configuração do Tempo\ncat > /config/tempo/tempo.yaml << 'TEMPO_EOF'\nserver:\n  http_listen_port: 3200\n  grpc_listen_port: 9095\n\ndistributor:\n  receivers:\n    otlp:\n      protocols:\n        grpc:\n          endpoint: 0.0.0.0:4317\n        http:\n          endpoint: 0.0.0.0:4318\n\ningester:\n  max_block_duration: 5m\n  max_block_bytes: 100_000_000\n\ncompactor:\n  compaction:\n    block_retention: 1h\n    compacted_block_retention: 10m\n    retention_concurrency: 10\n\nstorage:\n  trace:\n    backend: local\n    local:\n      path: /var/tempo/traces\n    pool:\n      max_workers: 100\n      queue_depth: 10000\n\nusage_report:\n  reporting_enabled: false\nTEMPO_EOF\n\n# Datasources do Grafana\ncat > /config/grafana/provisioning/datasources/datasources.yaml << 'GRAFANA_EOF'\napiVersion: 1\ndatasources:\n  - name: Mimir\n    type: prometheus\n    access: proxy\n    url: http://mimir-1:9009/prometheus\n    isDefault: true\n    editable: true\n    jsonData:\n      timeInterval: \\\"15s\\\"\n      httpMethod: POST\n      httpHeaderName1: X-Scope-OrgID\n      exemplarTraceIdDestinations:\n        - name: traceID\n          datasourceUid: tempo\n          urlDisplayLabel: View Trace\n    secureJsonData:\n      httpHeaderValue1: \\\"1\\\"\n\n  - name: Tempo\n    type: tempo\n    access: proxy\n    url: http://tempo:3200\n    editable: true\n    jsonData:\n      httpMethod: GET\n      serviceMap:\n        datasourceUid: Mimir\n      nodeGraph:\n        enabled: true\n      search:\n        hide: false\n      traceQuery:\n        type: traceql\nGRAFANA_EOF\n\necho 'Verificando arquivos criados...'\ntest -f /config/otel/otel-collector-config.yaml || (echo 'ERRO: otel-collector-config.yaml não encontrado' && exit 1)\ntest -f /config/mimir/mimir.yaml || (echo 'ERRO: mimir.yaml não encontrado' && exit 1)\ntest -f /config/tempo/tempo.yaml || (echo 'ERRO: tempo.yaml não encontrado' && exit 1)\ntest -f /config/grafana/provisioning/datasources/datasources.yaml || (echo 'ERRO: datasources.yaml não encontrado' && exit 1)\n\necho 'Config files created successfully' &&\ntouch /config/.ready &&\ntail -f /dev/null\n\"\n"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "test -f /config/.ready || exit 1"
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - observability-network
+    restart: unless-stopped
+    labels:
+      - coolify.healthcheck.enabled=false
+  otel-collector:
+    image: "otel/opentelemetry-collector-contrib:0.139.0"
+    container_name: otel-collector
+    volumes:
+      - "observability-config:/config:ro"
+    command:
+      - "--config=/config/otel/otel-collector-config.yaml"
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+    environment:
+      - OTEL_LOG_LEVEL=info
+    healthcheck:
+      test:
+        - CMD
+        - /otelcol-contrib
+        - validate
+        - "--config=/config/otel/otel-collector-config.yaml"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      config-init:
+        condition: service_healthy
+      mimir-1:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks:
+      - observability-network
+    restart: unless-stopped
+    labels:
+      - coolify.healthcheck.path=/metrics
+      - coolify.healthcheck.port=8888
+  mimir-1:
+    image: "grafana/mimir:2.11.0"
+    container_name: mimir-1
+    volumes:
+      - "observability-config:/config:ro"
+      - "mimir-data-1:/var/lib/mimir"
+    command:
+      - "-config.file=/config/mimir/mimir.yaml"
+      - "-target=all"
+      - "-server.http-listen-address=0.0.0.0"
+      - "-server.grpc-listen-address=0.0.0.0"
+    ports:
+      - "9009:9009"
+    environment:
+      - "MIMIR_MEMBERLIST_JOIN=mimir-1:7946,mimir-2:7946,mimir-3:7946"
+    depends_on:
+      config-init:
+        condition: service_healthy
+    networks:
+      - observability-network
+    restart: unless-stopped
+    labels:
+      - coolify.healthcheck.path=/ready
+      - coolify.healthcheck.port=9009
+  mimir-2:
+    image: "grafana/mimir:2.11.0"
+    container_name: mimir-2
+    volumes:
+      - "observability-config:/config:ro"
+      - "mimir-data-2:/var/lib/mimir"
+    command:
+      - "-config.file=/config/mimir/mimir.yaml"
+      - "-target=all"
+      - "-server.http-listen-address=0.0.0.0"
+      - "-server.grpc-listen-address=0.0.0.0"
+      - "-server.http-listen-port=9010"
+      - "-server.grpc-listen-port=9096"
+    environment:
+      - "MIMIR_MEMBERLIST_JOIN=mimir-1:7946,mimir-2:7946,mimir-3:7946"
+    depends_on:
+      config-init:
+        condition: service_healthy
+      mimir-1:
+        condition: service_started
+    networks:
+      - observability-network
+    restart: unless-stopped
+  mimir-3:
+    image: "grafana/mimir:2.11.0"
+    container_name: mimir-3
+    volumes:
+      - "observability-config:/config:ro"
+      - "mimir-data-3:/var/lib/mimir"
+    command:
+      - "-config.file=/config/mimir/mimir.yaml"
+      - "-target=all"
+      - "-server.http-listen-address=0.0.0.0"
+      - "-server.grpc-listen-address=0.0.0.0"
+      - "-server.http-listen-port=9011"
+      - "-server.grpc-listen-port=9097"
+    environment:
+      - "MIMIR_MEMBERLIST_JOIN=mimir-1:7946,mimir-2:7946,mimir-3:7946"
+    depends_on:
+      config-init:
+        condition: service_healthy
+      mimir-1:
+        condition: service_started
+    networks:
+      - observability-network
+    restart: unless-stopped
+  tempo:
+    image: "grafana/tempo:2.4.0"
+    container_name: tempo
+    volumes:
+      - "observability-config:/config:ro"
+      - "tempo-data:/var/tempo"
+    command:
+      - "-config.file=/config/tempo/tempo.yaml"
+    ports:
+      - "3200:3200"
+    depends_on:
+      config-init:
+        condition: service_healthy
+    networks:
+      - observability-network
+    restart: unless-stopped
+    labels:
+      - coolify.healthcheck.path=/ready
+      - coolify.healthcheck.port=3200
+  grafana:
+    image: "grafana/grafana:10.3.0"
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - "grafana-data:/var/lib/grafana"
+      - "observability-config:/config:ro"
+      - "./dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro"
+      - "./grafana-dashboard-frontend-instrumentation.json:/etc/grafana/provisioning/dashboards/telemetria/grafana-dashboard-frontend-instrumentation.json:ro"
+    entrypoint: "sh -c \"\nmkdir -p /etc/grafana/provisioning/datasources &&\ncp /config/grafana/provisioning/datasources/datasources.yaml /etc/grafana/provisioning/datasources/datasources.yaml &&\n/run.sh\n\"\n"
+    environment:
+      - "GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}"
+      - "GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}"
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - "GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}"
+      - "GF_SERVER_DOMAIN=${GF_SERVER_DOMAIN:-localhost}"
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      - GF_SERVER_ENABLE_GZIP=true
+      - GF_SERVER_PROTOCOL=http
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget --spider --quiet --tries=1 --timeout=3 http://localhost:3000/api/health || exit 1"
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    depends_on:
+      config-init:
+        condition: service_healthy
+      mimir-1:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks:
+      - observability-network
+    restart: unless-stopped
+    labels:
+      - coolify.healthcheck.path=/api/health
+      - coolify.healthcheck.port=3000
+volumes:
+  observability-config: null
+  mimir-data-1: null
+  mimir-data-2: null
+  mimir-data-3: null
+  tempo-data: null
+  grafana-data: null
+networks:
+  observability-network:
+    driver: bridge

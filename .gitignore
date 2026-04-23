@@ -1,0 +1,46 @@
+# Terraform state files — nunca commitar
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform lock file de estado S3
+.terraform.tfstate.lock.info
+
+# Diretório de plugins e módulos baixados
+.terraform/
+
+# Planos gerados localmente
+tfplan
+tfplan-destroy
+*.tfplan
+
+# Variáveis com valores reais — nunca commitar
+terraform.tfvars
+*.auto.tfvars
+
+# Arquivos de override locais
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Crash logs do Terraform
+crash.log
+crash.*.log
+
+# Arquivos de ambiente local
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# JetBrains IDEs
+.idea/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Logs
+*.log

@@ -1,0 +1,48 @@
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+  max_block_bytes: 100_000_000
+  lifecycler:
+    ring:
+      kvstore:
+        store: memberlist
+      replication_factor: 1
+
+compactor:
+  compaction:
+    block_retention: 24h
+    compacted_block_retention: 1h
+    retention_concurrency: 10
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: ${tempo_bucket_name}
+      region: ${aws_region}
+      forcepathstyle: false
+    pool:
+      max_workers: 100
+      queue_depth: 10000
+    wal:
+      path: /tmp/tempo/wal
+
+memberlist:
+  bind_port: 7946
+  join_members: []
+
+usage_report:
+  reporting_enabled: false

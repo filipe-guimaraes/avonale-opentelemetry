@@ -1,0 +1,157 @@
+# =============================================================================
+# OpenTelemetry Collector — otel-aggregator
+# Papel: ponto central de ingestao OTLP. Recebe do otel-frontend, Lambdas ADOT
+# e instancias EC2 de API. Exporta metricas para Mimir e traces para Tempo.
+# =============================================================================
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+    path: "/health"
+    check_collector_pipeline:
+      enabled: true
+      interval: "5m"
+      exporter_failure_threshold: 5
+
+  pprof:
+    endpoint: "0.0.0.0:1777"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:${otlp_grpc_port}"
+        max_recv_msg_size_mib: 16
+        keepalive:
+          server_parameters:
+            max_connection_idle: 11s
+            max_connection_age: 12s
+            max_connection_age_grace: 5s
+            time: 10s
+            timeout: 5s
+          enforcement_policy:
+            min_time: 5s
+            permit_without_stream: true
+      http:
+        endpoint: "0.0.0.0:${otlp_http_port}"
+        max_request_body_size: 16777216
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "otel-collector"
+          scrape_interval: 10s
+          static_configs:
+            - targets: ["0.0.0.0:8888"]
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+  batch:
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+    timeout: 10s
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: "${environment}"
+        action: upsert
+      - key: collector.tier
+        value: "aggregator"
+        action: upsert
+
+  transform/fetch_route:
+    trace_statements:
+      - context: span
+        statements:
+          - set(span.attributes["url.path"], span.attributes["http.url"]) where span.attributes["http.url"] != nil and span.attributes["url.path"] == nil
+          - replace_pattern(span.attributes["url.path"], "^https://[^/]+", "") where span.attributes["url.path"] != nil
+          - replace_pattern(span.attributes["url.path"], "^http://[^/]+", "") where span.attributes["url.path"] != nil
+
+  attributes/normalize-http:
+    actions:
+      - key: http.method
+        from_attribute: http.request.method
+        action: upsert
+      - key: http.status_code
+        from_attribute: http.response.status_code
+        action: upsert
+      - key: http.route
+        from_attribute: url.path
+        action: upsert
+
+connectors:
+  spanmetrics:
+    dimensions:
+      - name: http.method
+      - name: http.status_code
+      - name: http.route
+    dimensions_cache_size: 1000
+    exemplars:
+      enabled: true
+
+exporters:
+  logging:
+    loglevel: info
+
+  prometheusremotewrite/mimir:
+    endpoint: "http://${mimir_endpoint}/api/v1/push"
+    headers:
+      X-Scope-OrgID: "1"
+    resource_to_telemetry_conversion:
+      enabled: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 300s
+
+  otlp/tempo:
+    endpoint: "${tempo_endpoint}"
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 200
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 300s
+
+service:
+  extensions: [health_check, pprof]
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, transform/fetch_route, attributes/normalize-http, batch]
+      exporters: [otlp/tempo, spanmetrics]
+
+    metrics:
+      receivers: [otlp, prometheus, spanmetrics]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheusremotewrite/mimir]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [logging]
+
+  telemetry:
+    logs:
+      level: "info"
+      encoding: "json"
+    metrics:
+      level: "normal"
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
