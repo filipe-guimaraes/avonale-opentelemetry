@@ -193,6 +193,7 @@ data "aws_iam_policy_document" "otel_aggregator_task" {
       "s3:GetObject",
       "s3:DeleteObject",
       "s3:ListBucket",
+      "s3:GetBucketLocation",
     ]
     resources = [
       "arn:aws:s3:::*-mimir-*",
@@ -277,6 +278,7 @@ data "aws_iam_policy_document" "mimir_task" {
       "s3:GetObject",
       "s3:DeleteObject",
       "s3:ListBucket",
+      "s3:GetBucketLocation",
     ]
     resources = [
       "arn:aws:s3:::${var.mimir_bucket_name}",
@@ -342,6 +344,7 @@ data "aws_iam_policy_document" "tempo_task" {
       "s3:GetObject",
       "s3:DeleteObject",
       "s3:ListBucket",
+      "s3:GetBucketLocation",
     ]
     resources = [
       "arn:aws:s3:::${var.tempo_bucket_name}",

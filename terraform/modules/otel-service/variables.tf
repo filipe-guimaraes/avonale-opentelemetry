@@ -84,6 +84,12 @@ variable "container_image" {
   type        = string
 }
 
+variable "command" {
+  description = "Comando para executar no container."
+  type        = list(string)
+  default     = ["--config=env:OTEL_CONFIG"]
+}
+
 variable "collector_config" {
   description = "Conteúdo YAML da configuração do OpenTelemetry Collector."
   type        = string

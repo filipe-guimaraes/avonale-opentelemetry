@@ -20,6 +20,10 @@ resource "aws_ecs_task_definition" "this" {
           name  = "BACKEND_CONFIG"
           value = var.backend_config
         },
+        {
+          name  = "AWS_REGION"
+          value = var.aws_region
+        },
       ]
 
       portMappings = [

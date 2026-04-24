@@ -21,9 +21,7 @@ resource "aws_ecs_task_definition" "this" {
       image     = var.container_image
       essential = true
 
-      command = [
-        "--config=env:OTEL_CONFIG",
-      ]
+      command = var.command
 
       environment = [
         {

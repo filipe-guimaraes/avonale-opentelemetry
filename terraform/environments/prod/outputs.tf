@@ -54,3 +54,13 @@ output "security_group_frontend_id" {
 output "security_group_aggregator_id" {
   value = module.security_groups.aggregator_sg_id
 }
+
+output "tempo_ecr_uri" {
+  description = "URI do repositório ECR para a imagem customizada do Tempo"
+  value       = aws_ecr_repository.tempo.repository_url
+}
+
+output "mimir_ecr_uri" {
+  description = "URI do repositório ECR para a imagem customizada do Mimir"
+  value       = aws_ecr_repository.mimir.repository_url
+}

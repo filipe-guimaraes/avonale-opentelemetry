@@ -29,8 +29,8 @@ locals {
   otlp_http_port = 4318
 
   otel_collector_image = "otel/opentelemetry-collector-contrib:0.139.0"
-  mimir_image          = "grafana/mimir:2.11.0"
-  tempo_image          = "grafana/tempo:2.4.0"
+  mimir_image          = "${aws_ecr_repository.mimir.repository_url}:latest"
+  tempo_image          = "${aws_ecr_repository.tempo.repository_url}:latest"
 
   common_tags = merge(var.tags, {
     Project     = var.project_name
@@ -64,6 +64,36 @@ locals {
     tempo_bucket_name = var.tempo_bucket_name
     aws_region        = var.aws_region
   })
+}
+
+# ============================================================
+# ECR Repository for Custom Tempo Image
+# ============================================================
+
+resource "aws_ecr_repository" "tempo" {
+  name                 = "${local.name_prefix}-tempo"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.common_tags
+}
+
+# ============================================================
+# ECR Repository for Custom Mimir Image
+# ============================================================
+
+resource "aws_ecr_repository" "mimir" {
+  name                 = "${local.name_prefix}-mimir"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.common_tags
 }
 
 # ============================================================
@@ -271,19 +301,21 @@ module "mimir" {
   memory                = 2048
   desired_count         = 1
   container_image       = local.mimir_image
-  container_command     = ["/bin/sh", "-c", "printf '%s' \"$BACKEND_CONFIG\" > /tmp/config.yaml && /bin/mimir -config.file=/tmp/config.yaml -target=all -server.http-listen-address=0.0.0.0 -server.grpc-listen-address=0.0.0.0"]
-  backend_config        = local.mimir_config
+  container_command = []
+  backend_config = ""
+  #container_command     = ["/bin/sh", "-c", "printf '%s' \"$BACKEND_CONFIG\" > /tmp/config.yaml && /bin/mimir -config.file=/tmp/config.yaml -target=all -server.http-listen-address=0.0.0.0 -server.grpc-listen-address=0.0.0.0"]
+  #backend_config        = local.mimir_config
   log_group_name        = module.cloudwatch.mimir_log_group_name
   aws_region            = var.aws_region
   cloud_map_service_arn = module.cloud_map.mimir_service_arn
 
   container_ports = [
-    { name = "http", port = 9009 },
+    { name = "http", port = 8080 },
     { name = "grpc", port = 9095 },
     { name = "memberlist", port = 7946 },
   ]
 
-  health_check_port = 9009
+  health_check_port = 8080
   health_check_path = "/ready"
 
   depends_on = [module.cloud_map]
@@ -307,12 +339,11 @@ module "tempo" {
   memory                = 2048
   desired_count         = 1
   container_image       = local.tempo_image
-  container_command     = ["/bin/sh", "-c", "printf '%s' \"$BACKEND_CONFIG\" > /tmp/config.yaml && /tempo -config.file=/tmp/config.yaml"]
-  backend_config        = local.tempo_config
   log_group_name        = module.cloudwatch.tempo_log_group_name
   aws_region            = var.aws_region
   cloud_map_service_arn = module.cloud_map.tempo_service_arn
-
+  backend_config        = ""
+  container_command     = []
   container_ports = [
     { name = "http", port = 3200 },
     { name = "otlp-grpc", port = 4317 },
